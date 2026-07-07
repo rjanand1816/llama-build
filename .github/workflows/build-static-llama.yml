@@ -1,4 +1,4 @@
-name: Build Static llama-server
+name: Build Static ARM64 llama-server
 
 on:
   workflow_dispatch:
@@ -11,24 +11,39 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git cmake build-essential
+          sudo apt-get install -y \
+            git \
+            cmake \
+            ninja-build \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
 
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      - name: Configure CMake
+      - name: Configure
         run: |
           cmake -S llama.cpp -B build \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_BUILD_SERVER=ON
 
-      - name: Build llama-server
+      - name: Build
         run: |
-          cmake --build build --target llama-server --config Release -j$(nproc)
+          cmake --build build --target llama-server
 
-      - name: Upload binary
+      - name: Strip binary
+        run: |
+          aarch64-linux-gnu-strip build/bin/llama-server
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-linux
+          name: llama-server-linux-aarch64
           path: build/bin/llama-server
