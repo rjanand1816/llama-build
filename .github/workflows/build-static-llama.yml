@@ -1,0 +1,34 @@
+name: Build Static llama-server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git cmake build-essential
+
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+
+      - name: Configure CMake
+        run: |
+          cmake -S llama.cpp -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_SERVER=ON
+
+      - name: Build llama-server
+        run: |
+          cmake --build build --target llama-server --config Release -j$(nproc)
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-linux
+          path: build/bin/llama-server
