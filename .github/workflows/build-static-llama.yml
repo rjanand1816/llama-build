@@ -1,4 +1,4 @@
-name: Build Static ARM64 llama-server
+name: Build TRUE Static ARM64 llama-server
 
 on:
   workflow_dispatch:
@@ -15,35 +15,54 @@ jobs:
             git \
             cmake \
             ninja-build \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
+            wget \
+            xz-utils \
+            file
+
+      - name: Download ARM64 musl toolchain
+        run: |
+          wget https://musl.cc/aarch64-linux-musl-cross.tgz
+          tar -xzf aarch64-linux-musl-cross.tgz
+
+      - name: Add toolchain to PATH
+        run: |
+          echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      - name: Configure
+      - name: Configure CMake
         run: |
           cmake -S llama.cpp -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_C_COMPILER=aarch64-linux-musl-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-musl-g++ \
+            -DCMAKE_C_FLAGS="-static -fno-pie" \
+            -DCMAKE_CXX_FLAGS="-static -fno-pie" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie" \
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_BUILD_SERVER=ON
 
       - name: Build
         run: |
-          cmake --build build --target llama-server
+          cmake --build build --target llama-server -j$(nproc)
 
       - name: Strip binary
         run: |
-          aarch64-linux-gnu-strip build/bin/llama-server
+          aarch64-linux-musl-strip build/bin/llama-server
+
+      - name: Verify binary
+        run: |
+          file build/bin/llama-server
+          readelf -l build/bin/llama-server | grep INTERP || echo "✓ No dynamic linker (TRUE static)"
+          ldd build/bin/llama-server || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-linux-aarch64
+          name: llama-server-linux-aarch64-static
           path: build/bin/llama-server
