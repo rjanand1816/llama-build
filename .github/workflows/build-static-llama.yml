@@ -1,68 +1,107 @@
-name: Build TRUE Static ARM64 llama-server
+name: Build Static llama-server (aarch64)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+
+    env:
+      BUILD_DIR: build-aarch64
 
     steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install cross compiler and static libraries
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             git \
             cmake \
             ninja-build \
-            wget \
-            xz-utils \
-            file
+            file \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            binutils-aarch64-linux-gnu
 
-      - name: Download ARM64 musl toolchain
-        run: |
-          wget https://musl.cc/aarch64-linux-musl-cross.tgz
-          tar -xzf aarch64-linux-musl-cross.tgz
-
-      - name: Add toolchain to PATH
-        run: |
-          echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-
+      # 3. Clone llama.cpp
       - name: Clone llama.cpp
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+          git clone --depth=1 https://github.com/ggml-org/llama.cpp.git
 
-      - name: Configure CMake
+      # Create toolchain file
+      - name: Create toolchain
         run: |
-          cmake -S llama.cpp -B build \
+          cat > toolchain-aarch64.cmake <<EOF
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+
+          set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+          EOF
+
+      # 4. Configure and build static binary
+      - name: Configure
+        run: |
+          cmake -S llama.cpp -B ${BUILD_DIR} \
             -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DCMAKE_C_COMPILER=aarch64-linux-musl-gcc \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-musl-g++ \
-            -DCMAKE_C_FLAGS="-static -fno-pie" \
-            -DCMAKE_CXX_FLAGS="-static -fno-pie" \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie" \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/toolchain-aarch64.cmake \
             -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_BUILD_SERVER=ON
+            -DGGML_STATIC=ON \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie" \
+            -DCMAKE_C_FLAGS="-static -fno-pie" \
+            -DCMAKE_CXX_FLAGS="-static -fno-pie"
 
       - name: Build
         run: |
-          cmake --build build --target llama-server -j$(nproc)
+          cmake --build ${BUILD_DIR} --target llama-server -j$(nproc)
 
-      - name: Strip binary
+      # 5. Verify binary
+      - name: Verify architecture
         run: |
-          aarch64-linux-musl-strip build/bin/llama-server
+          echo "===== FILE ====="
+          file ${BUILD_DIR}/bin/llama-server
 
-      - name: Verify binary
-        run: |
-          file build/bin/llama-server
-          readelf -l build/bin/llama-server | grep INTERP || echo "✓ No dynamic linker (TRUE static)"
-          ldd build/bin/llama-server || true
+          echo
+          echo "===== ELF HEADER ====="
+          aarch64-linux-gnu-readelf -h ${BUILD_DIR}/bin/llama-server
 
+          echo
+          echo "===== DYNAMIC SECTION ====="
+          if aarch64-linux-gnu-readelf -d ${BUILD_DIR}/bin/llama-server | grep NEEDED; then
+            echo "ERROR: Binary is dynamically linked!"
+            exit 1
+          fi
+
+          echo
+          echo "===== INTERPRETER ====="
+          if aarch64-linux-gnu-readelf -l ${BUILD_DIR}/bin/llama-server | grep interpreter; then
+            echo "ERROR: Dynamic loader found!"
+            exit 1
+          fi
+
+          echo
+          echo "Binary is fully static."
+
+      # 6. Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-linux-aarch64-static
-          path: build/bin/llama-server
+          name: llama-server-static-aarch64
+          path: ${{ env.BUILD_DIR }}/bin/llama-server
