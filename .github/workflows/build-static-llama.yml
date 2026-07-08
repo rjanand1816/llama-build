@@ -1,4 +1,4 @@
-name: Build Static llama-server (aarch64)
+name: Build Static llama-server ARM32 (musl)
 
 on:
   workflow_dispatch:
@@ -8,100 +8,113 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      BUILD_DIR: build-aarch64
+      TOOLCHAIN: /opt/musl
+      BUILD_DIR: build-arm32
 
     steps:
-      # 1. Checkout repository
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install cross compiler and static libraries
+      # Install build tools
       - name: Install dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             git \
             cmake \
             ninja-build \
-            file \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            binutils-aarch64-linux-gnu
+            wget \
+            xz-utils \
+            file
+
+      # 2. Download musl.cc ARM32 toolchain
+      - name: Download musl toolchain
+        run: |
+          cd /tmp
+          wget https://musl.cc/arm-linux-musleabi-cross.tgz
+          sudo mkdir -p ${TOOLCHAIN}
+          sudo tar -xzf arm-linux-musleabi-cross.tgz -C ${TOOLCHAIN} --strip-components=1
+
+          echo "${TOOLCHAIN}/bin" >> $GITHUB_PATH
+
+      # Verify compiler
+      - name: Verify compiler
+        run: |
+          arm-linux-musleabi-gcc --version
 
       # 3. Clone llama.cpp
       - name: Clone llama.cpp
         run: |
-          git clone --depth=1 https://github.com/ggml-org/llama.cpp.git
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      # Create toolchain file
+      # Create CMake toolchain
       - name: Create toolchain
         run: |
-          cat > toolchain-aarch64.cmake <<EOF
+          cat > toolchain-arm32-musl.cmake <<EOF
           set(CMAKE_SYSTEM_NAME Linux)
-          set(CMAKE_SYSTEM_PROCESSOR aarch64)
+          set(CMAKE_SYSTEM_PROCESSOR arm)
 
-          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
-          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+          set(CMAKE_C_COMPILER arm-linux-musleabi-gcc)
+          set(CMAKE_CXX_COMPILER arm-linux-musleabi-g++)
 
-          set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+          set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+          set(CMAKE_C_FLAGS "-static -fno-pie")
+          set(CMAKE_CXX_FLAGS "-static -fno-pie")
+          set(CMAKE_EXE_LINKER_FLAGS "-static -no-pie")
           EOF
 
-      # 4. Configure and build static binary
+      # 4. Configure
       - name: Configure
         run: |
-          cmake -S llama.cpp -B ${BUILD_DIR} \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/toolchain-aarch64.cmake \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DGGML_STATIC=ON \
-            -DLLAMA_BUILD_SERVER=ON \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie" \
-            -DCMAKE_C_FLAGS="-static -fno-pie" \
-            -DCMAKE_CXX_FLAGS="-static -fno-pie"
+          cmake -S llama.cpp \
+                -B ${BUILD_DIR} \
+                -G Ninja \
+                -DCMAKE_TOOLCHAIN_FILE=toolchain-arm32-musl.cmake \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DGGML_STATIC=ON \
+                -DLLAMA_BUILD_SERVER=ON \
+                -DLLAMA_BUILD_TESTS=OFF \
+                -DLLAMA_BUILD_EXAMPLES=OFF
 
-      - name: Build
+      # Build
+      - name: Build llama-server
         run: |
           cmake --build ${BUILD_DIR} --target llama-server -j$(nproc)
 
       # 5. Verify binary
-      - name: Verify architecture
+      - name: Verify binary
         run: |
           echo "===== FILE ====="
           file ${BUILD_DIR}/bin/llama-server
 
           echo
           echo "===== ELF HEADER ====="
-          aarch64-linux-gnu-readelf -h ${BUILD_DIR}/bin/llama-server
+          arm-linux-musleabi-readelf -h ${BUILD_DIR}/bin/llama-server
+
+          echo
+          echo "===== PROGRAM HEADERS ====="
+          arm-linux-musleabi-readelf -l ${BUILD_DIR}/bin/llama-server
 
           echo
           echo "===== DYNAMIC SECTION ====="
-          if aarch64-linux-gnu-readelf -d ${BUILD_DIR}/bin/llama-server | grep NEEDED; then
-            echo "ERROR: Binary is dynamically linked!"
+          if arm-linux-musleabi-readelf -d ${BUILD_DIR}/bin/llama-server | grep NEEDED; then
+            echo "Dynamic libraries detected!"
+            exit 1
+          fi
+
+          if arm-linux-musleabi-readelf -l ${BUILD_DIR}/bin/llama-server | grep INTERP; then
+            echo "Dynamic loader detected!"
             exit 1
           fi
 
           echo
-          echo "===== INTERPRETER ====="
-          if aarch64-linux-gnu-readelf -l ${BUILD_DIR}/bin/llama-server | grep interpreter; then
-            echo "ERROR: Dynamic loader found!"
-            exit 1
-          fi
+          echo "✓ Binary is fully static."
 
-          echo
-          echo "Binary is fully static."
-
-      # 6. Upload artifact
+      # Upload
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-static-aarch64
-          path: ${{ env.BUILD_DIR }}/bin/llama-server
+          name: llama-server-static-arm32-musl
+          path: build-arm32/bin/llama-server
